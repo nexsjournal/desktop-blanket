@@ -1,0 +1,16 @@
+# 运行环境：macOS + Python 3.11+
+# 初始化：uv venv .venv && uv pip install -r requirements.txt
+# 依赖清单按 .venv 实装核对（2026-10-07，integrator）：
+#   numpy 2.4.6 / pyobjc-* 12.2.2 / pillow 12.3.0 / pytest 9.1.1
+
+# ---- 运行时 ----
+numpy
+pyobjc-core
+pyobjc-framework-Cocoa        # Foundation / AppKit（rug/overlay/icons）
+pyobjc-framework-Quartz       # kCGDesktopIconWindowLevel、CGWindowListCopyWindowInfo
+pyobjc-framework-SceneKit     # overlay 渲染（传递依赖 Metal/ModelIO 由 pip 自动解析）
+pyobjc-framework-FSEvents     # icons.py 桌面变化监听；缺失时降级 1.5s 轮询，仍建议安装
+pillow                        # 仅 scripts/prep_texture.py 贴图预处理用
+
+# ---- 开发 ----
+pytest                        # dev：tests/ 单测

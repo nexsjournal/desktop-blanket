@@ -1,0 +1,9 @@
+{
+  "rug_w_frac": 0.626,
+  "rug_h_frac": 0.62,
+  "angle_deg": 0.0,
+  "texture": "",
+  "bump_enabled": true,
+  "bump_scale": 0.99,
+  "shadow_enabled": true
+}

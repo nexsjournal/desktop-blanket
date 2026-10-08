@@ -1,0 +1,17 @@
+# ---- macOS ----
+.DS_Store
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ---- 第三方参考素材（不随公开仓库分发）----
+# refer/ 内的参考视频来自 X 原帖（非本项目版权），本地留档即可；
+# 如需一并提交：git add -f refer/<文件名>
+refer/*.mp4
