@@ -1,6 +1,15 @@
 # 桌面毛毯（Desktop Rug）
 
+![macOS 11+](https://img.shields.io/badge/platform-macOS%2011%2B-000000?logo=apple&logoColor=white)
+![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
+![tests: 144 passed](https://img.shields.io/badge/tests-144%20passed-brightgreen)
+
 在 macOS 桌面上「铺」一块有真实布料物理的毯子，把你的桌面图标盖在下面——**把烂摊子扫到毯子底下**。
+
+一句话说清它是什么：**一个把桌面当成桌面的小玩具**——纯 Python（numpy 自写 3D 布料求解器 + PyObjC/SceneKit 渲染），
+窗口层级卡在「Finder 桌面图标之上、所有普通窗口之下」，毯子以外的像素完全穿透，
+不碰壁纸、不碰你的文件、不联网，退出即复原。
 
 毯子悬浮在「桌面图标之上、所有普通窗口之下」，可以抓住任意位置拖动、甩出去会飞行旋转落地；拖动时**起大而圆润的波浪/折**、松手后缓缓平息；**拖住一个角横着划过毯身，会把毯子真折起来**（折层压在自己身上、露出变暗的背面——v5 真 3D 布料 + 圆角折痕）；毯子下面的图标会顶起隆包，堆得越高包越大；毯子以外的区域鼠标完全穿透，桌面照常可点。**退出后一切复原**。
 
@@ -78,7 +87,7 @@ uv venv .venv && uv pip install -r requirements.txt   # 首次
 ## 验证与自检
 
 ```bash
-# 1) 单元测试（136 个：布料物理（3D/翻折/自碰撞/休眠/折痕圆角/拖动不塌陷/折层遮蔽）/ 隆起场 / 图标解析 / 渲染层 hitTest+材质+贴图留白检测+**厚度几何（滚边/接触阴影/浮雕/灯光重配）** / 穿透闸门 / 菜单栏模板图标与交接报告 / AppleScript 编译回归）
+# 1) 单元测试（144 个：布料物理（3D/翻折/自碰撞/休眠/折痕圆角/拖动不塌陷/折层遮蔽）/ 隆起场 / 图标解析 / 渲染层 hitTest+材质+贴图留白检测+**厚度几何（滚边/接触阴影/浮雕/灯光重配）** / 穿透闸门 / 菜单栏模板图标与交接报告 / AppleScript 编译回归）
 .venv/bin/python -m pytest tests/ -q
 
 # 2) 无人值守自检：铺上毯子 → 校验窗口层级 → 自动退出（屏幕上会出现 5 秒毯子，无残留）
@@ -141,6 +150,8 @@ uv venv .venv && uv pip install -r requirements.txt   # 首次
 
 ```
 desktop-blanket/
+├── LICENSE                 # MIT
+├── requirements.txt        # 运行时 + 开发依赖（numpy / pyobjc-* / pillow / pytest）
 ├── build_app.sh            # 打包「桌面毛毯.app」+ DMG + 安装到 /Applications（唯一打包入口）
 ├── packaging/launcher.c    # app 的 Mach-O 启动器（execv 到包内运行时；见下「打包设计」）
 ├── run.sh                  # 源码运行（.venv/bin/python rug.py）
@@ -168,6 +179,8 @@ desktop-blanket/
 ├── archive/                # 历史产物留档（旧的空壳 app 打包脚本与过时说明，见 archive/README.md）
 └── 开发文档.md              # 设计/技术/里程碑/验收 全文档
 ```
+
+> 代码规模：核心模块 ≈5.7k 行、接口契约 ≈730 行、测试 ≈2.7k 行（144 例）、辅助脚本 ≈2.1k 行。
 
 ### 打包设计（为什么不是 py2app / PyInstaller）
 
@@ -212,3 +225,20 @@ desktop-blanket/
 - **`/Applications` 里出现两个同名 app / 启动台里多一个？** 说明有旧版本残留。跑一次 `./build_app.sh` 会清理历史空壳并刷新 LaunchServices 注册；仍有多余条目就 `lsregister -dump | grep -B7 com.desktop.rug` 看路径，再 `lsregister -u <多余路径>` 注销。
 - **想看到「翻折」**：拖住毯子一个角**横着划过毯身**（行程要过中线），松手后折层会留在毯上（露底处是变暗的背面、折脊是圆角）；来回拖会把折层拖平——这是真实行为，不是 bug；「抚平折痕 ⌘F」一键摊平。观感评测/出图：`.venv/bin/python scripts/look_demo.py`（四场景 → /tmp/look_*.png + 覆盖率/白边/破洞数值）；单折验证：`scripts/fold_demo.py`。
 - 观感依赖你的贴图质量；`assets/rugs/README.md` 有规格（正俯视、均匀光照、边缘带透明通道最佳）。
+
+---
+
+## 许可（License）
+
+**MIT License** —— 见 [LICENSE](LICENSE)。可自由使用、修改、分发（含商用），保留版权声明与许可声明即可。
+
+Copyright (c) 2026 nexsjournal
+
+素材与第三方内容的归属另算，与本项目代码的 MIT 授权无关：
+
+| 内容 | 说明 |
+| --- | --- |
+| `assets/rugs/rug-01.png`、`rug-01-back.png` | 由项目内的演示素材（`blanket.webp`）经 `scripts/prep_texture.py` 处理而来，仅作示例；换成你自己的地毯图即可（规格见 `assets/rugs/README.md`） |
+| `assets/logo/**` | 本项目品牌标记，随代码一同按 MIT 授权 |
+| `refer/` | 参考视频来自 [X 原帖 @terkelg](https://x.com/terkelg/status/2107540718461886464)，**非本项目版权、不随仓库分发**（已在 `.gitignore` 中忽略） |
+| 灵感来源 | [desktop.cleaning](https://desktop.cleaning) 的 "Rugs"；本项目为从零自行设计实现，未使用其代码或素材 |
