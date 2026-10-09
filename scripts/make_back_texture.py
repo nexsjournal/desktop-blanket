@@ -31,7 +31,8 @@ from Quartz import (
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DARKEN = 0.72      # 背面压暗系数（v5：0.55 太黑，顶视翻折处像"墨块"；真毯背面图案清晰、
                    # 只是略暗，观感见 §12.17）
-BLUR_R = 2         # 盒式模糊半径（px；v5：6px 把图案糊成暗斑，2px 足够压织物纹理的锐度）
+BLUR_R = 0          # 盒式模糊半径（px；v6.6：2 → 0——用户反馈折痕处"毛糙模糊"，
+                   # 真毯背面的图案是清晰的，只是颜色暗；模糊留给渲染的 AO 去做）
 
 
 def _read_rgba(path: str):

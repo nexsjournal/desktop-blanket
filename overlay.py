@@ -12,8 +12,18 @@ spike/m0_overlay_spike.py 的真机实录。
     场景 x = sim x、场景 y = sim z（高度朝相机）、场景 z = sim y
     （sim y 向下恰好与"屏幕上方向 = -z"自洽，无需取负）
   - 每帧 sim.step(dt) + 顶点 NSData 重建 SCNGeometry（索引 buffer 复用，
-    spike 实测 0.21ms/帧）；法线由 z 梯度实时计算 + 平行光/环境光 Blinn
-  - 伪阴影：顶点同源暗色剪影 mesh（偏移 (3,8)pt、z 压平、边缘 alpha 渐隐）
+    spike 实测 0.21ms/帧）；法线由三角网格实时计算 + 平行光/环境光 Blinn
+  - **v6「厚度」**（用户报「像薄纸片」，§12.18）：
+      1. **滚边**：沿网格边界环向外+向下卷出的圆角厚边（CLOTH_THICKNESS_PT=7pt，
+         顶点色带「受光→背光」梯度）——顶视图下毯子四周有真实的「材料厚度带」，
+         不再是一条一刀切的纸边；
+      2. **接触阴影裙**：沿边界环外扩的顶点色渐隐条（贴边最暗 → 4 环淡出），
+         抬起时按光源反方向偏移并柔化 → 毯子是真的「放在桌面上」而不是贴纸；
+      3. **静止微浮雕**：网格空间的静态低频高度场（两档波长），贴地满幅、离地衰减
+         → 平铺区域也有柔和的明暗起伏（厚织物的软塌感）；
+      4. **灯光重配**：环境光 0.55→0.42、平行光 0.85→0.525（平铺面总亮不变），
+         明暗对比范围翻倍 → 折面/滚边/浮雕都看得见。
+  - 折层遮蔽：sim.ao()（xy 粗网格「局部顶高−自身高度」）按顶点色压暗折缝
   - 根 NSView.hitTest_：sim.nearest_distance ≤ 40pt 返回 self，否则 None
     （注意：view 级 hitTest 返回 None **不**参与窗口路由，只吞事件）
   - 点击穿透闸门（唯一真正生效的机制）：动态 setIgnoresMouseEvents_ —— 毯外
@@ -59,11 +69,36 @@ __all__ = ["RugOverlay", "gate_wants_ignore", "icon_level_base"]
 
 # ---- 常量（契约/文档初值，M1 可调） ----
 GRAB_RADIUS_PT = 40.0          # 抓取半径（contract：nearest_distance ≤ 40pt 收鼠标）
-SHADOW_OFFSET_PT = (3.0, 8.0)  # 伪阴影屏幕偏移（6-10pt 量级，右下方向）
-SHADOW_PLANE_Y = -0.4          # 阴影压平后的场景高度（略低于布面，避开 z-fighting）
-SHADOW_ALPHA = 0.35            # 阴影整体不透明度（材质层，顶点色再乘边缘渐隐）
-SHADOW_FADE_CELLS = 2.5        # 边缘 alpha 渐隐宽度（网格格数）
+SHADOW_PLANE_Y = -16.0         # 接触阴影所在场景高度（低于滚边最低点，避免遮住布面自身）
 CAM_HEIGHT = 1000.0            # 相机高度（正交投影下只影响 near/far 覆盖范围）
+# ---- v6「厚度」：滚边 / 接触阴影 / 静止浮雕 / 灯光（用户报「像薄纸片」→ §12.18） ----
+CLOTH_THICKNESS_PT = 7.0              # 毯子厚度（pt）：滚边剖面半径（≈1.2cm 的厚地毯）
+# 剖面角（度）：0=贴在顶面边缘（必须为 0，否则布面与滚边间会留缝）、90=赤道（最外缘）
+EDGE_ROLL_ANGLES = (0.0, 34.0, 64.0, 90.0)
+EDGE_ROLL_DARK = (1.0, 0.95, 0.80, 0.58)  # 各环顶点色暗化 → 滚边自带「受光 → 背光」梯度
+EDGE_SEAM_FRAC = 0.5                  # 接缝法线倾角 = 该系数 × 第一环角（顶面/滚边各让一半）
+EDGE_BAND_DARK = 0.80                 # 顶面最外一圈的暗化（毯与桌面的接触暗缝）
+EDGE_BAND_CELLS = 1.6                 # 边缘暗化带宽（格）
+RELIEF_AMP_PT = (4.4, 1.8)            # 静止微浮雕振幅（pt；两档：大波长 + 小波长）
+RELIEF_CELLS = (18.0, 8.0)            # 对应波长（格）——≥7 格（≥90pt），避免「揉纸」碎纹
+RELIEF_FADE_PT = 8.0                  # 离地高度达它 → 浮雕衰减为 0（抬起/翻折处保持干净）
+RELIEF_CURV_SOFT = 2.0                # 曲率软阈值（pt/格²）：曲率越大浮雕越弱
+                                      # （1/(1+(lap/2)²)；波峰/折脊上不叠加浮雕）
+RELIEF_MIN_CELL = 0.30                # 格距比下限：压缩区按格距比缩放浮雕振幅（保底 0.30）
+AO_STRENGTH = 0.34                    # 折层遮蔽场对顶点色的最大暗化（布在自己身上留的影）
+SHADOW_SKIRT_PT = (-2.0, 6.0, 18.0, 34.0)     # 接触阴影裙横向半径（pt；首环内缩藏到布下）
+SHADOW_SKIRT_ALPHA = (0.48, 0.38, 0.15, 0.0)  # 各环顶点色 alpha（<0.5：不计入 coverage 判定）
+SHADOW_LIFT_GAIN = 1.0                # 抬升高度的阴影偏移/柔化增益（×1/tan(仰角)）
+# 灯光（**sRGB 值**：SceneKit 对 NSColor 做色彩管理、转线性后才进光照 → 0.55 实际是线性 0.263）。
+# 实测标定：平铺面线性响应 ≈ amb_lin + sun_lin×sin(仰角)。旧值 (0.55,0.85) → 线性 (0.263,0.694)
+# → 响应 0.863（与实测 0.875 一致）；新值 (0.43,1.0) → 线性 (0.153,1.0) → 响应 0.860
+# （总亮不变）但明暗斜率 +44%：浅起伏/滚边/折面都有看得见的明暗差。
+AMBIENT_WHITE = 0.43
+SUN_WHITE = 1.0
+
+SUN_TO_LIGHT = (-0.5, 0.7071, -0.5)   # 场景坐标下「指向光源」的单位向量：左上偏前 →
+                                      # 屏幕观感＝光在左上、影子落右下（抬升处偏移也用同一方向）
+NORMAL_FLIP_KEEP = 0.30               # 朝下法线保留比例（原为全翻正 → 折脊两侧对称、无体积）
 FALLBACK_ICON_LEVEL = -2147483603  # contract.md §4 的回退常量
 GATE_TICK_S = 1.0 / 30.0       # 穿透闸门轮询周期（毯子未入睡 / 活动期）
 GATE_TICK_IDLE_S = 1.0 / 5.0   # 毯子入睡后的闸门轮询周期（省空闲 CPU；全局监视器仍是即时主驱动）
@@ -113,6 +148,43 @@ def gate_wants_ignore(dist_pt: float, currently_ignoring: bool, grabbed: bool,
     return bool(dist_pt > GRAB_RADIUS_PT)
 
 
+def _shadow_basis_from(to_light) -> tuple[tuple[float, float], float]:
+    """由「指向光源」的单位向量给出（阴影屏幕方向, lean）——纯函数，可离屏单测。
+
+    阴影方向 = 光源水平来向的反方向（屏幕 x = 场景 x、屏幕 y = 场景 z）；
+    lean = 水平分量/竖直分量 = 1/tan(仰角)：物体抬升 h 时影子外移 h·lean。
+    """
+    lx, ly, lz = (float(v) for v in to_light)
+    h = math.hypot(lx, lz)
+    if h < 1e-6:
+        return (0.0, 0.0), 0.6
+    return (-lx / h, -lz / h), float(min(max(h / max(abs(ly), 1e-3), 0.0), 3.0))
+
+
+def orientation_for_to_light(to_light) -> tuple[float, float, float, float]:
+    """四元数 (x,y,z,w)：把节点局部 -z（平行光的传播方向）旋到 -to_light。
+
+    不碰欧拉角：SceneKit 的 eulerAngles 组件序/正负号与常见右手系不一致（2026-10-08 实测
+    三个轴全部反号），用四元数 + 建灯后 convertVector:toNode: 自校验（见 _sun_shadow_basis）
+    避免约定陷阱。
+    """
+    lx, ly, lz = (float(v) for v in to_light)
+    nrm = math.sqrt(lx * lx + ly * ly + lz * lz)
+    if nrm < 1e-9:
+        return (0.0, 0.0, 0.0, 1.0)
+    dx, dy, dz = -lx / nrm, -ly / nrm, -lz / nrm          # 目标传播方向
+    ax = 0.0 * dz - (-1.0) * dy                            # cross((0,0,-1), d)
+    ay = (-1.0) * dx - 0.0 * dz
+    az = 0.0 * dy - 0.0 * dx
+    s = math.sqrt(ax * ax + ay * ay + az * az)
+    c = -dz                                                # dot((0,0,-1), d)
+    if s < 1e-9:
+        return (0.0, 0.0, 0.0, 1.0) if c > 0.0 else (1.0, 0.0, 0.0, 0.0)
+    ang = math.atan2(s, c)
+    k = math.sin(ang / 2.0) / s
+    return (ax * k, ay * k, az * k, math.cos(ang / 2.0))
+
+
 def icon_level_base() -> int:
     """桌面图标层基准 kCGDesktopIconWindowLevel。
 
@@ -144,6 +216,7 @@ TEXTURE_MARGIN_MAX_FRAC = 0.06   # 单边最多裁掉的比例（防把画面内
 TEXTURE_MARGIN_LIGHT = 200       # 「留白」判定：该行/列 min(R,G,B) 均值高于它（2023 psd 软渐变）
 TEXTURE_MARGIN_SAMPLES = 96      # 每条边扫描时的采样点数
 TEXTURE_MARGIN_INSET = 4         # 检测到留白后的保险内缩（px）
+TEXTURE_MARGIN_RESIDUAL = 10     # 内缩后仍偏亮的过渡带最多再收多少 px
 
 
 def _rep_pixels(rep):
@@ -159,6 +232,23 @@ def _rep_pixels(rep):
     return buf.reshape(h, w, stride)[:, :, :spp]   # 行内按像素连续排列，丢掉行尾填充
 
 
+def _edge_line(px: np.ndarray, side: str, k: int) -> np.ndarray:
+    """取某条边向里第 k 条线（k=0 = 最外一条）。"""
+    h, w = px.shape[0], px.shape[1]
+    if side == "top":
+        return px[k]
+    if side == "bottom":
+        return px[h - 1 - k]
+    if side == "left":
+        return px[:, k]
+    return px[:, w - 1 - k]
+
+
+def _light_frac(line: np.ndarray, samples: int) -> float:
+    step = max(int(line.shape[0] // samples), 1)
+    return float((np.min(line[::step, :3], axis=1) > TEXTURE_MARGIN_LIGHT).mean())
+
+
 def _line_is_margin(line: np.ndarray, samples: int) -> bool:
     """一行/列是否属于「边距」：**过半数像素偏亮**（白底），或整体近乎透明。
 
@@ -170,40 +260,39 @@ def _line_is_margin(line: np.ndarray, samples: int) -> bool:
     px = line[::step]
     if px.shape[1] >= 4 and float(px[:, 3].mean()) < 12.0:
         return True
-    light = float((np.min(px[:, :3], axis=1) > TEXTURE_MARGIN_LIGHT).mean())
-    return light > 0.5
+    return float((np.min(px[:, :3], axis=1) > TEXTURE_MARGIN_LIGHT).mean()) > 0.5
 
 
 def _detect_texture_margin(rep):
-    """检测四边可裁边距 (top, left, bottom, right)（px）；无 NSBitmapImageRep 时全 0。"""
+    """检测四边可裁边距 (top, left, bottom, right)（px）；无 NSBitmapImageRep 时全 0。
+
+    两段式：① 主体留白（过半偏亮 = 白底）→ ② 过渡带收尾（外侧仍 >18% 偏亮就继续收，
+    最多再多 RESIDUAL px）。② 是补独立复核发现的漏：rug-01.png 右侧留白比左侧窄、
+    判定早停在 8px，裁后右边缘仍留一条 5px 浅色带（贴图里 min>200 占 33%）——
+    渲染层面近白(min>225)已只剩 0.0x%，但为稳妥把过渡带也收掉。
+    """
     px = _rep_pixels(rep) if rep is not None else None
     if px is None:
         return (0, 0, 0, 0)
     h, w = px.shape[0], px.shape[1]
-    cap_y = max(int(h * TEXTURE_MARGIN_MAX_FRAC), 1)
-    cap_x = max(int(w * TEXTURE_MARGIN_MAX_FRAC), 1)
-    top = 0
-    while top < cap_y and _line_is_margin(px[top], TEXTURE_MARGIN_SAMPLES):
-        top += 1
-    bottom = 0
-    while bottom < cap_y and _line_is_margin(px[h - 1 - bottom], TEXTURE_MARGIN_SAMPLES):
-        bottom += 1
-    left = 0
-    while left < cap_x and _line_is_margin(px[:, left], TEXTURE_MARGIN_SAMPLES):
-        left += 1
-    right = 0
-    while right < cap_x and _line_is_margin(px[:, w - 1 - right], TEXTURE_MARGIN_SAMPLES):
-        right += 1
+    cap = {"top": max(int(h * TEXTURE_MARGIN_MAX_FRAC), 1),
+           "bottom": max(int(h * TEXTURE_MARGIN_MAX_FRAC), 1),
+           "left": max(int(w * TEXTURE_MARGIN_MAX_FRAC), 1),
+           "right": max(int(w * TEXTURE_MARGIN_MAX_FRAC), 1)}
+    out = {}
+    for side in ("top", "bottom", "left", "right"):
+        k = 0
+        while k < cap[side] and _line_is_margin(_edge_line(px, side, k), TEXTURE_MARGIN_SAMPLES):
+            k += 1
+        if k:
+            k = min(k + TEXTURE_MARGIN_INSET, cap[side])          # 保险内缩
+            lim = min(k + TEXTURE_MARGIN_RESIDUAL, cap[side])     # 过渡带收尾
+            while k < lim and _light_frac(_edge_line(px, side, k), TEXTURE_MARGIN_SAMPLES) > 0.18:
+                k += 1
+        out[side] = k
+    top, bottom, left, right = out["top"], out["bottom"], out["left"], out["right"]
     if top + bottom >= h - 8 or left + right >= w - 8:   # 整张都被判成边距 → 不裁
         return (0, 0, 0, 0)
-    # 保险内缩：留白与内容之间常有几行渐变/渗色，多裁 INSET px（吃进毯子深色边框，
-    # 观感无损），确保画面上不残留白色发丝边。
-    inset = TEXTURE_MARGIN_INSET if (top or left or bottom or right) else 0
-    if inset:
-        top = min(top + inset, cap_y)
-        bottom = min(bottom + inset, cap_y)
-        left = min(left + inset, cap_x)
-        right = min(right + inset, cap_x)
     return (top, left, bottom, right)
 
 
@@ -319,6 +408,34 @@ class RugRootView(NSView):
         否则「点一下毯子」只是激活窗口、要第二下才抓得住（P1）。
         """
         return True
+
+    def menuForEvent_(self, event):
+        """右键 / Ctrl+左键 → 弹出毯子上下文菜单（菜单由 RugApp 现场构建）。
+
+        毯外（>GRAB_RADIUS_PT）返回 None = 不弹（AppKit 默认行为）；本来闸门也会把
+        毯外的鼠标事件让给桌面，所以这里基本只在毯上被调用。
+        """
+        owner = getattr(self, "_owner", None)
+        provider = getattr(owner, "menu_provider", None) if owner is not None else None
+        if provider is None:
+            return None
+        try:
+            sim = owner._sim
+            if sim is None or not owner.is_shown():
+                return None
+            x, y = self._sim_point(event)
+            d = sim.nearest_distance(x, y)
+            if getattr(owner, "edit_mode", False):
+                d = min(d, owner._handle_distance(x, y))
+            if d > GRAB_RADIUS_PT:
+                return None
+        except Exception:
+            return None
+        try:
+            return provider(x, y)
+        except Exception as exc:
+            _log("RUG-WARN", f"上下文菜单构建失败：{exc}")
+            return None
 
     # ---- 鼠标 → sim ----
     def mouseDown_(self, e):
@@ -483,12 +600,14 @@ class RugOverlay:
     """
 
     def __init__(self, screen, texture_path: str, sim_factory,
-                 on_grab=None, on_release=None, fps: int = 30) -> None:
+                 on_grab=None, on_release=None, fps: int = 30,
+                 menu_provider=None) -> None:
         self._screen = screen
         self._texture_path = str(texture_path)
         self._sim_factory = sim_factory
         self._on_grab_cb = on_grab
         self._on_release_cb = on_release
+        self._menu_provider = menu_provider   # (x, y) -> NSMenu：毯上右键菜单（rug.py 注入）
         self._fps = max(30, min(60, int(fps)))  # 契约：30~60
         self._sim = None
         self._shown = False
@@ -499,22 +618,43 @@ class RugOverlay:
         self._scene = None
         self._cloth_node = None
         self._shadow_node = None
+        self._rim_node = None        # v6 滚边节点（沿边界环卷出的厚边）
         self._cloth_mat = None       # 布面材质（_build_gui 建，_rebuild_geometry 逐帧挂到新几何上）
-        self._shadow_mat = None      # 伪阴影材质（同上）
+        self._rim_mat = None         # 滚边材质（正面材质副本 + 双面：避免环绕方向风险）
+        self._shadow_mat = None      # 接触阴影材质（同上）
         self._timer = None
         self._elem = None            # SCNGeometryElement（索引 buffer 复用）
-        self._color_src = None       # 阴影边缘渐隐顶点色源（拓扑静态，逐帧复用）
+        self._elem2 = None
+        self._rim_elem = None        # 滚边索引（拓扑静态）
+        self._skirt_elem = None      # 阴影裙索引（拓扑静态）
+        self._color_src = None       # 布面顶点色源（逐帧：静态边缘带 × 动态 AO）
+        self._rim_color_src = None   # 滚边顶点色源（静态）
         self._rows = 0
         self._cols = 0
         self._dx = 1.0
         self._dy = 1.0
         self._w = 0.0
         self._h = 0.0
-        self._vbuf = None            # 场景顶点 (N,3) f32
+        self._vbuf = None            # 场景顶点 (N,3) f32（深度 = 物理位置）
+        self._vrel = None            # 法线用顶点 (N,3)：vb + 微浮雕（只进法线，不进深度）
         self._nbuf = None            # 场景法线 (N,3) f32
         self._ubuf = None            # 场景 UV (N,2) f32（v 已取 1-v）
-        self._sbuf = None            # 阴影顶点 (N,3) f32
-        self._cbuf = None            # 阴影顶点色 (N,4) f32
+        self._cbuf = None            # 布面顶点色 (N,4) f32
+        self._eband = None           # 静态边缘暗化系数 (N,) f32
+        self._w_relief = None        # 上一帧的浮雕权重 (N,) f32（诊断/测试用）
+        self._relief = None          # 静态微浮雕高度 (N,) f32
+        self._bloop = None           # 边界环顶点索引（有序、闭合）
+        self._bloop_next = None
+        self._bloop_prev = None
+        self._rim_v = None           # 滚边顶点 (L*rings,3)
+        self._rim_n = None
+        self._rim_uv = None
+        self._rim_c = None
+        self._rim_uv_src = None      # 滚边 UV/顶点色源（拓扑静态，建一次复用）
+        self._sbuf = None            # 阴影裙顶点 (L*rings,3)
+        self._scbuf = None           # 阴影裙顶点色 (L*rings,4)
+        self._shadow_dir = (0.0, 0.0)  # 光源反方向的屏幕 xy（建灯时按灯光实际朝向算）
+        self._shadow_lean = 0.6      # 1/tan(仰角)：抬升 z → 阴影偏移/柔化系数
         self._last_t = None
         self._err_count = 0
         # ---- 点击穿透闸门状态（见 _update_click_through） ----
@@ -587,8 +727,18 @@ class RugOverlay:
         self._sim = None
         self._shown = False
         self._elem = None
+        self._elem2 = None
+        self._rim_elem = None
+        self._skirt_elem = None
         self._color_src = None
+        self._rim_uv_src = None
+        self._rim_color_src = None
         self._vbuf = self._nbuf = self._ubuf = self._sbuf = self._cbuf = None
+        self._vrel = None
+        self._rim_v = self._rim_n = self._rim_uv = self._rim_c = None
+        self._scbuf = None
+        self._bloop = self._bloop_next = self._bloop_prev = None
+        self._eband = self._relief = None
         self._last_cursor = None
         self._last_dist = None
         self._gate_dirty = False
@@ -596,6 +746,11 @@ class RugOverlay:
 
     def is_shown(self) -> bool:
         return bool(self._shown)
+
+    @property
+    def menu_provider(self):
+        """毯上右键菜单提供者：(x, y) 主屏本地点 → NSMenu；None = 不弹菜单。"""
+        return self._menu_provider
 
     def set_edit_mode(self, on: bool) -> None:
         """进入/退出「编辑毯子」模式：显示四角缩放柄 + 旋转柄。
@@ -658,7 +813,7 @@ class RugOverlay:
         self._update_handles()
 
     def set_shadow_visible(self, on: bool) -> None:
-        """伪阴影开关（设置窗用）：直接切阴影节点可见性。"""
+        """接触阴影开关（设置窗用）：直接切阴影节点（贴边投影裙）可见性。"""
         if self._shadow_node is not None:
             try:
                 self._shadow_node.setHidden_(not bool(on))
@@ -883,6 +1038,10 @@ class RugOverlay:
 
         self._cloth_mat = _cloth_material(tex, SceneKit.SCNCullModeFront)       # 正面（兼容旧断言名）
         self._cloth_mat_back = _cloth_material(tex_back, SceneKit.SCNCullModeBack)
+        # 滚边材质：正面材质副本 + 双面（滚边是薄条，双面可免去环绕方向的脆弱依赖）
+        rim_mat = _cloth_material(tex, SceneKit.SCNCullModeFront)
+        rim_mat.setDoubleSided_(True)   # SceneKit 的双面语义 = 不剔除背面（本机无 CullModeNone 常量）
+        self._rim_mat = rim_mat
         _log("RUG-INFO", f"布面材质：正面={os.path.basename(self._texture_path)} "
                          f"背面={os.path.basename(self._back_texture_path)}")
 
@@ -890,10 +1049,17 @@ class RugOverlay:
         cloth_node.setCastsShadow_(False)
         scene.rootNode().addChildNode_(cloth_node)
 
-        # ---- 伪阴影材质：暗色 Constant，透明度交给顶点色 ----
+        # v6 滚边节点（几何逐帧重建；材质=正面材质副本，顶点色带滚边暗化梯度）
+        rim_node = SceneKit.SCNNode.node()
+        rim_node.setCastsShadow_(False)
+        rim_node.setRenderingOrder_(1)      # 滚边压在布面之后画（贴边处遮挡关系更稳）
+        scene.rootNode().addChildNode_(rim_node)
+        self._rim_node = rim_node
+
+        # ---- 接触阴影材质：暗色 Constant，透明度交给顶点色 ----
         shadow_mat = SceneKit.SCNMaterial.material()
         shadow_mat.diffuse().setContents_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.0, 0.0, 0.0, SHADOW_ALPHA))
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.0, 0.0, 0.0, 1.0))
         shadow_mat.setLightingModelName_(SceneKit.SCNLightingModelConstant)
         shadow_mat.setDoubleSided_(True)
         self._shadow_mat = shadow_mat
@@ -922,21 +1088,36 @@ class RugOverlay:
         scene.rootNode().addChildNode_(cam_node)
 
         # ---- 灯光：环境光 + 平行光（Blinn 出立体感） ----
+        # v6：环境光占比下调、平行光补足（平铺面总亮不变）→ 明暗对比范围翻倍。
+        # 平铺面：AMBIENT_WHITE + SUN_WHITE×sin(仰角) ≈ 0.42 + 0.525×0.866 ≈ 0.875（与旧版一致）。
         amb = SceneKit.SCNLight.light()
         amb.setType_(SceneKit.SCNLightTypeAmbient)
-        amb.setColor_(NSColor.colorWithCalibratedWhite_alpha_(0.55, 1.0))
+        amb.setColor_(NSColor.colorWithCalibratedWhite_alpha_(AMBIENT_WHITE, 1.0))
         amb_node = SceneKit.SCNNode.node()
         amb_node.setLight_(amb)
         scene.rootNode().addChildNode_(amb_node)
 
         sun = SceneKit.SCNLight.light()
         sun.setType_(SceneKit.SCNLightTypeDirectional)
-        sun.setColor_(NSColor.colorWithCalibratedWhite_alpha_(0.85, 1.0))
+        sun.setColor_(NSColor.colorWithCalibratedWhite_alpha_(SUN_WHITE, 1.0))
         sun_node = SceneKit.SCNNode.node()
         sun_node.setLight_(sun)
-        # 斜射（俯视基准上偏 60°/35°），隆起与褶皱才有明暗面
-        sun_node.setEulerAngles_((-math.radians(60.0), math.radians(35.0), 0.0))
+        # 斜射方向：用四元数把平行光旋到 SUN_TO_LIGHT（不碰欧拉角约定）；建灯后立刻用
+        # SceneKit 自己的 convertVector:toNode: 实测核对（约定不符就翻转并记日志）。
+        sun_node.setOrientation_(orientation_for_to_light(SUN_TO_LIGHT))
         scene.rootNode().addChildNode_(sun_node)
+        dir_m, lean_m = self._sun_shadow_basis(sun_node, scene.rootNode())
+        if dir_m[0] * SUN_TO_LIGHT[0] + dir_m[1] * SUN_TO_LIGHT[2] > 0.0:
+            # 实测传播方向与目标同侧（= 差 180°）→ 四元数共轭重设
+            q = orientation_for_to_light(SUN_TO_LIGHT)
+            sun_node.setOrientation_((q[0], -q[1], -q[2], -q[3]))
+            dir_m, lean_m = self._sun_shadow_basis(sun_node, scene.rootNode())
+            _log("RUG-WARN", f"平行光朝向共轭修正后 dir=({dir_m[0]:.2f},{dir_m[1]:.2f})")
+        self._shadow_dir, self._shadow_lean = dir_m, lean_m
+        dir_t, lean_t = _shadow_basis_from(SUN_TO_LIGHT)
+        _log("RUG-INFO", f"灯光：环境 {AMBIENT_WHITE:.2f} + 平行 {SUN_WHITE:.2f}；"
+                         f"阴影方向=({dir_m[0]:.2f},{dir_m[1]:.2f}) lean={lean_m:.2f}"
+                         f"（纯函数期望 ({dir_t[0]:.2f},{dir_t[1]:.2f}) lean={lean_t:.2f}）")
 
         scn.setScene_(scene)
         view.addSubview_(scn)
@@ -988,37 +1169,162 @@ class RugOverlay:
         self._tri = idx.reshape(-1, 3).astype(np.int64)   # 法线计算用三角索引表
 
         self._vbuf = np.empty((n, 3), np.float32)
+        self._vrel = np.empty((n, 3), np.float32)      # 法线用顶点（= vb + 微浮雕）
         self._nbuf = np.empty((n, 3), np.float32)
         self._fnbuf = np.empty((self._tri.shape[0], 3), np.float32)  # 面法线工作区
-        self._sbuf = np.empty((n, 3), np.float32)
         self._ubuf = np.empty((n, 2), np.float32)
         self._ubuf[:, 0] = uv[:, 0]
         self._ubuf[:, 1] = 1.0 - uv[:, 1]  # SceneKit v 轴朝上，喂贴图前 1-v（contract.md §4）
 
-        # 阴影边缘渐隐顶点色：到网格边缘的距离（格数）→ alpha 系数；拓扑静态，一次构建
-        edge = np.minimum(
-            np.minimum(np.arange(cols), cols - 1 - np.arange(cols))[None, :],
-            np.minimum(np.arange(rows), rows - 1 - np.arange(rows))[:, None],
-        ).reshape(-1).astype(np.float32)
-        self._cbuf = np.zeros((n, 4), np.float32)
-        self._cbuf[:, 3] = np.clip(edge / SHADOW_FADE_CELLS, 0.0, 1.0)
-        self._color_src = _src(self._cbuf, SceneKit.SCNGeometrySourceSemanticColor, 4)
+        # ---- v6：静态顶点色（边缘暗化带）与静止微浮雕 ----
+        rr, cc = np.meshgrid(np.arange(rows), np.arange(cols), indexing="ij")
+        cells = np.minimum(np.minimum(rr, rows - 1 - rr),
+                           np.minimum(cc, cols - 1 - cc)).astype(np.float32)
+        band = np.clip(cells / EDGE_BAND_CELLS, 0.0, 1.0)
+        self._eband = (EDGE_BAND_DARK + (1.0 - EDGE_BAND_DARK) * band).ravel()
+        self._cbuf = np.empty((n, 4), np.float32)
+        self._cbuf[:, 3] = 1.0
+        # 微浮雕：网格空间静态低频场（两档波长）。每个分量 = 行正弦 × 列正弦，两个不同取向的
+        # 波叠加 → 无格点感；波长 ≥ 7 格（≥90pt，远大于格距）→ 大而柔的起伏，不是碎纹。
+        # 振幅按「倾角」标定：RMS 倾角约 4°，实测 relief_dlum≈3（look_demo 厚度指标）。
+        fld = np.zeros_like(rr, dtype=np.float64)
+        for amp, wl in zip(RELIEF_AMP_PT, RELIEF_CELLS):
+            k = 2.0 * np.pi / float(wl)
+            fld += amp * (np.sin(k * (rr + 0.35 * cc) + 0.7)
+                          * np.cos(k * (cc - 0.42 * rr) + 2.1))
+        self._relief = fld.ravel().astype(np.float32)
+
+        # ---- v6：边界环（滚边 + 接触阴影裙共用；拓扑静态） ----
+        # 环序：顶行左→右、右列上→下、底行右→左、左列下→上（顺时针，长度 L=2(cols+rows)-4）
+        top = np.arange(cols, dtype=np.int64)
+        right = np.arange(1, rows, dtype=np.int64) * cols + (cols - 1)
+        bottom = np.arange(cols - 2, -1, -1, dtype=np.int64) + (rows - 1) * cols
+        left = np.arange(rows - 2, 0, -1, dtype=np.int64) * cols
+        loop = np.concatenate([top, right, bottom, left])
+        self._bloop = loop
+        self._bloop_next = np.roll(loop, -1)
+        self._bloop_prev = np.roll(loop, 1)
+        L = int(loop.size)
+        rings = len(EDGE_ROLL_ANGLES)
+        sk = len(SHADOW_SKIRT_PT)
+        self._rim_rings = rings
+        self._skirt_rings = sk
+        # 布局：index = k*rings + j（k=环上第 k 点、j=第 j 环）→ `buf[j::rings]` 即第 j 环，
+        # 逐环整体向量化写入（滚边与阴影裙同布局）。
+        self._rim_v = np.empty((L * rings, 3), np.float32)
+        self._rim_n = np.empty((L * rings, 3), np.float32)
+        self._rim_uv = np.repeat(self._ubuf[loop], rings, axis=0)     # UV = 边界 UV（贴图边缘）
+        self._rim_c = np.empty((L * rings, 4), np.float32)
+        for j, dark in enumerate(EDGE_ROLL_DARK):
+            self._rim_c[j::rings, 0] = dark
+            self._rim_c[j::rings, 1] = dark
+            self._rim_c[j::rings, 2] = dark
+            self._rim_c[j::rings, 3] = 1.0
+
+        def _strip_indices(n_rings: int) -> np.ndarray:
+            """环带三角索引（拓扑静态）：每段 × 每环带 2 三角形。"""
+            k = np.arange(L, dtype=np.int64)
+            kn = (k + 1) % L
+            kk = np.repeat(k, n_rings - 1)
+            knn = np.repeat(kn, n_rings - 1)
+            jj = np.tile(np.arange(n_rings - 1, dtype=np.int64), L)
+            a0 = kk * n_rings + jj
+            a1 = a0 + 1
+            b0 = knn * n_rings + jj
+            b1 = b0 + 1
+            tri = np.empty((a0.size * 2, 3), dtype=np.uint32)
+            tri[0::2, 0], tri[0::2, 1], tri[0::2, 2] = a0, b0, a1
+            tri[1::2, 0], tri[1::2, 1], tri[1::2, 2] = b0, b1, a1
+            return tri.ravel()
+
+        ridx = _strip_indices(rings)
+        self._rim_elem = SceneKit.SCNGeometryElement.alloc().initWithData_primitiveType_primitiveCount_indicesChannelCount_interleavedIndicesChannels_bytesPerIndex_(
+            NSData.dataWithBytes_length_(ridx.tobytes(), ridx.nbytes),
+            SceneKit.SCNGeometryPrimitiveTypeTriangles, int(ridx.size) // 3, 1, False, 4)
+        sidx = _strip_indices(sk)
+        self._skirt_elem = SceneKit.SCNGeometryElement.alloc().initWithData_primitiveType_primitiveCount_indicesChannelCount_interleavedIndicesChannels_bytesPerIndex_(
+            NSData.dataWithBytes_length_(sidx.tobytes(), sidx.nbytes),
+            SceneKit.SCNGeometryPrimitiveTypeTriangles, int(sidx.size) // 3, 1, False, 4)
+        self._sbuf = np.empty((L * sk, 3), np.float32)
+        self._scbuf = np.empty((L * sk, 4), np.float32)
+        self._scbuf[:, :3] = 0.0
+        self._rim_color_src = _src(self._rim_c, SceneKit.SCNGeometrySourceSemanticColor, 4)
+        self._rim_uv_src = _src(self._rim_uv, SceneKit.SCNGeometrySourceSemanticTexcoord, 2)
+        _log("RUG-INFO", f"v6 厚度几何：边界环 {L} 点、滚边 {rings} 环（厚 "
+                         f"{CLOTH_THICKNESS_PT:.0f}pt）、阴影裙 {sk} 环；"
+                         f"浮雕振幅 {RELIEF_AMP_PT} pt / 波长 {RELIEF_CELLS} 格")
 
     # ---- 内部：逐帧几何重建 ----
     def _rebuild_geometry(self) -> None:
         sim = self._sim
         V = sim.vertices()  # (N,3) f32：x, y_sim, z_height
+        n = V.shape[0]
         vb = self._vbuf
-        vb[:, 0] = V[:, 0]  # 场景 x = sim x
-        vb[:, 1] = V[:, 2]  # 场景 y = sim z（高度朝相机）
-        vb[:, 2] = V[:, 1]  # 场景 z = sim y（y-down 自洽，见模块 docstring）
+        # v6：静止微浮雕 = **只扰法线**的 bump 场（不动顶点深度）。权重在网格空间算：
+        #   a) 离地高度（抬起/翻折/图标隆起上不加）；
+        #   b) 曲率（波峰/折脊上不加——那里加浮雕等于「锐化」，法线被成倍放大）；
+        #   c) 按格距比缩放振幅（压缩区同一材料场被挤短，等比缩放后「倾角」与位姿无关）。
+        # 只扰法线的原因（实测）：浮雕曾直接加在渲染高度上，拖动场景里压缩区在屏幕上
+        # 自重叠，±6pt 的深度差会改变「哪一层通过深度测试」→ 出现碎斑。改成法线扰动后
+        # 深度仍由物理决定，观感回到干净的表面起伏。
+        fl = self._sim_array(sim, "floor_heights", n, 0.0)
+        rows, cols = self._rows, self._cols
+        zz = V[:, 2].reshape(rows, cols)
+        w_relief = np.clip(1.0 - (zz - fl.reshape(rows, cols)) / RELIEF_FADE_PT, 0.0, 1.0)
+        lap = np.zeros_like(zz)
+        lap[1:-1, 1:-1] = (zz[:-2, 1:-1] + zz[2:, 1:-1] + zz[1:-1, :-2] + zz[1:-1, 2:]
+                           - 4.0 * zz[1:-1, 1:-1])
+        w_relief *= 1.0 / (1.0 + (np.abs(lap) / RELIEF_CURV_SOFT) ** 2)
+        px = V[:, 0].reshape(rows, cols)
+        py = V[:, 1].reshape(rows, cols)
+        rxc = np.ones_like(px)
+        ryc = np.ones_like(py)
+        rxc[:, 1:-1] = 0.5 * (np.abs(px[:, 2:] - px[:, 1:-1])
+                              + np.abs(px[:, 1:-1] - px[:, :-2])) / max(self._dx, 1e-6)
+        ryc[1:-1, :] = 0.5 * (np.abs(py[2:, :] - py[1:-1, :])
+                              + np.abs(py[1:-1, :] - py[:-2, :])) / max(self._dy, 1e-6)
+        # 边界行列沿用相邻内圈值（否则角点/边缘恒为 1.0 → 均匀压缩时它们漏过缩放）
+        rxc[:, 0] = rxc[:, 1]
+        rxc[:, -1] = rxc[:, -2]
+        ryc[0, :] = ryc[1, :]
+        ryc[-1, :] = ryc[-2, :]
+        # 压缩区按格距比缩放振幅：涟漪的**倾角**（=振幅/波长，二者同比例缩短）与位姿无关
+        # → 浮雕的明暗贡献恒定（实测拖动场景曾达静置态的 8 倍并出现 p99≈86 的碎斑，
+        # 按格距比缩放后回到同一量级）。下限保底防抖。
+        w_relief *= np.clip(np.minimum(rxc, ryc), RELIEF_MIN_CELL, 1.0)
+        w_relief = w_relief.ravel()
+        self._w_relief = w_relief       # 供回归测试读（密集折区/压缩区的浮雕权重）
+        # v6.1：深度偏置修复折叠层级问题——sim_z 越高（折起），scene_z 越小（深度测试中更近）。
+        # v6.5：系数 0.15 → **0.90**。为什么可以这么大：正交俯视 + 毯子平铺，**只有同一屏幕
+        # 位置的不同层会互相遮挡**（不同 (x,y) 的粒子投影到不同像素，深度顺序无关），所以
+        # 高度差近乎 1:1 映射到深度是安全的，而且更稳——折层只要高 1pt 就必定画在上层。
+        # 0.15 时两层贴到一起（互穿残余）深度差≈0 → 逐像素锯齿"撕口"（用户截图里的穿模）。
+        # 场景坐标：scene_x=sim_x, scene_y=sim_z（朝相机）, scene_z=sim_y+bias（深度测试轴）。
+        depth_bias = -0.90 * V[:, 2]   # sim_z 越高，bias 越负 → scene_z 越小 → 越近
+        np.copyto(vb, np.column_stack((V[:, 0], V[:, 2], V[:, 1] + depth_bias)))
+        vr = self._vrel
+        np.copyto(vr, vb)
+        vr[:, 1] += self._relief * w_relief                          # 仅法线用的起伏
 
-        # 法线：从三角网格算（v4 真 3D——翻折区需要真实朝向，不能再假设 z 单值梯度）。
-        # 朝下的法线翻正（保持 v3 起「恒从上方受光」的观感；翻折内侧靠背贴图变暗体现）。
+        # 边界环切向/外法线（滚边、阴影裙、边界法线过渡共用）
+        loop = self._bloop
+        p = vb[loop]
+        tvec = vb[self._bloop_next] - vb[self._bloop_prev]
+        th = tvec[:, [0, 2]]
+        ln = np.sqrt((th * th).sum(axis=1))
+        np.maximum(ln, 1e-9, out=ln)
+        th /= ln[:, None]
+        out = np.empty_like(th)
+        out[:, 0] = th[:, 1]          # 外法线 = 切向转 -90°（sim y 向下；环序为顺时针，
+        out[:, 1] = -th[:, 0]         # 该符号把法线指向毯外——test_overlay 有平铺期回归锁）
+
+        # 法线：从三角网格算（真 3D——翻折区需要真实朝向，不能假设 z 单值）
+        # v6：朝下法线只保留 NORMAL_FLIP_KEEP 比例（原来全翻正 → 折脊两侧被照得一样亮、
+        # 折面没有「迎光/背光」差 → 看起来像折纸；保留比例后远端折面自然变暗）。
         tri = self._tri
         fn = self._fnbuf
-        e1 = vb[tri[:, 1]] - vb[tri[:, 0]]
-        e2 = vb[tri[:, 2]] - vb[tri[:, 0]]
+        e1 = vr[tri[:, 1]] - vr[tri[:, 0]]
+        e2 = vr[tri[:, 2]] - vr[tri[:, 0]]
         fn[:, 0] = e1[:, 1] * e2[:, 2] - e1[:, 2] * e2[:, 1]
         fn[:, 1] = e1[:, 2] * e2[:, 0] - e1[:, 0] * e2[:, 2]
         fn[:, 2] = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
@@ -1028,7 +1334,16 @@ class RugOverlay:
         for c in range(3):
             nb[:, c] = np.bincount(tri_flat, weights=np.repeat(fn[:, c], 3),
                                    minlength=nb.shape[0])
-        nb[nb[:, 1] < 0.0] *= -1.0                     # 朝下翻正（恒"从上看"受光）
+        neg = nb[:, 1] < 0.0
+        if neg.any():
+            nb[neg, 1] *= -NORMAL_FLIP_KEEP
+        # 边界环法线朝滚边倾斜「接缝角」→ 顶面到滚边是圆滑过渡（与滚边首环法线一致）
+        seam = EDGE_SEAM_FRAC * EDGE_ROLL_ANGLES[1]
+        s1 = math.sin(math.radians(seam))
+        c1 = math.cos(math.radians(seam))
+        nb[loop, 0] += out[:, 0] * s1
+        nb[loop, 1] += c1 - 1.0
+        nb[loop, 2] += out[:, 1] * s1
         length = np.sqrt(nb[:, 0] ** 2 + nb[:, 1] ** 2 + nb[:, 2] ** 2)
         bad = length < 1e-9
         np.maximum(length, 1e-9, out=length)
@@ -1036,16 +1351,21 @@ class RugOverlay:
         if bad.any():
             nb[bad] = (0.0, 1.0, 0.0)                  # 退化三角（折叠贴合处）给恒定向上的法线
 
-        # 伪阴影：顶点同源，屏幕偏移 + 压平
-        sb = self._sbuf
-        sb[:, 0] = vb[:, 0] + SHADOW_OFFSET_PT[0]
-        sb[:, 1] = SHADOW_PLANE_Y
-        sb[:, 2] = vb[:, 2] + SHADOW_OFFSET_PT[1]
+        # 顶点色 = 静态边缘暗化带 × 折层遮蔽（sim.ao()）——厚织物贴边与折缝的接触阴影
+        ao = self._sim_array(sim, "ao", n, 0.0)
+        dark = self._eband * (1.0 - AO_STRENGTH * np.clip(ao, 0.0, 1.0))
+        cb = self._cbuf
+        cb[:, 0] = dark
+        cb[:, 1] = dark
+        cb[:, 2] = dark
+        cb[:, 3] = 1.0
+        self._color_src = _src(cb, SceneKit.SCNGeometrySourceSemanticColor, 4)
 
         geo = SceneKit.SCNGeometry.geometryWithSources_elements_(
             [_src(vb, SceneKit.SCNGeometrySourceSemanticVertex, 3),
              _src(nb, SceneKit.SCNGeometrySourceSemanticNormal, 3),
-             _src(self._ubuf, SceneKit.SCNGeometrySourceSemanticTexcoord, 2)],
+             _src(self._ubuf, SceneKit.SCNGeometrySourceSemanticTexcoord, 2),
+             self._color_src],
             [self._elem, self._elem2])
         # 关键（真机踩坑 2026-10-08）：geometryWithSources 造出的几何**自带空材质列表**，
         # macOS 26 上无材质的几何**完全不绘制**（不报错、不警告，画面全透明）。
@@ -1057,12 +1377,85 @@ class RugOverlay:
             geo.setMaterials_(mats)
         self._cloth_node.setGeometry_(geo)
 
+        # ---- v6：滚边（沿边界环向外+向下卷出的圆角厚边） ----
+        # 剖面：横向 R·sinφ、下坠 R(1-cosφ)；φ=90° 即「赤道」（最外缘，与桌面接触处）。
+        # 顶视图下这条带子有真实宽度（=R）且自带受光→背光梯度 → 材料厚度肉眼可见。
+        rv, rn = self._rim_v, self._rim_n
+        R = CLOTH_THICKNESS_PT
+        for j, ang in enumerate(EDGE_ROLL_ANGLES):
+            s = math.sin(math.radians(ang))
+            c = math.cos(math.radians(ang))
+            dv = rv[j::self._rim_rings]
+            dv[:, 0] = p[:, 0] + out[:, 0] * (R * s)
+            dv[:, 1] = p[:, 1] - R * (1.0 - c)
+            dv[:, 2] = p[:, 2] + out[:, 1] * (R * s)
+            # 首环（角 0，几何贴在布面边缘、用来封住缝）法线取接缝角，与布面边缘法线一致
+            na = ang if ang > 0.0 else EDGE_SEAM_FRAC * EDGE_ROLL_ANGLES[1]
+            sa = math.sin(math.radians(na))
+            ca = math.cos(math.radians(na))
+            dn = rn[j::self._rim_rings]
+            dn[:, 0] = out[:, 0] * sa
+            dn[:, 1] = ca
+            dn[:, 2] = out[:, 1] * sa
+        rgeo = SceneKit.SCNGeometry.geometryWithSources_elements_(
+            [_src(rv, SceneKit.SCNGeometrySourceSemanticVertex, 3),
+             _src(rn, SceneKit.SCNGeometrySourceSemanticNormal, 3),
+             self._rim_uv_src, self._rim_color_src],
+            [self._rim_elem])
+        if self._rim_mat is not None:
+            rgeo.setMaterials_([self._rim_mat])
+        self._rim_node.setGeometry_(rgeo)
+
+        # ---- v6：接触阴影裙（贴边最暗 → 外圈淡出；抬起时按光源反方向偏移并柔化） ----
+        sv, sc = self._sbuf, self._scbuf
+        lift_loop = np.clip(V[loop, 2] - fl[loop], 0.0, None)
+        soft = 1.0 / (1.0 + lift_loop / 26.0)
+        lat_max = max(abs(v) for v in SHADOW_SKIRT_PT)
+        for j, (lat, al) in enumerate(zip(SHADOW_SKIRT_PT, SHADOW_SKIRT_ALPHA)):
+            adv = self._shadow_lean * lift_loop * (abs(lat) / lat_max) * SHADOW_LIFT_GAIN
+            dv = sv[j::self._skirt_rings]
+            dv[:, 0] = p[:, 0] + out[:, 0] * lat + self._shadow_dir[0] * adv
+            dv[:, 1] = SHADOW_PLANE_Y
+            dv[:, 2] = p[:, 2] + out[:, 1] * lat + self._shadow_dir[1] * adv
+            sc[j::self._skirt_rings, 3] = al * soft
         sgeo = SceneKit.SCNGeometry.geometryWithSources_elements_(
-            [_src(sb, SceneKit.SCNGeometrySourceSemanticVertex, 3), self._color_src],
-            [self._elem])
+            [_src(sv, SceneKit.SCNGeometrySourceSemanticVertex, 3),
+             _src(sc, SceneKit.SCNGeometrySourceSemanticColor, 4)],
+            [self._skirt_elem])
         if self._shadow_mat is not None:
             sgeo.setMaterials_([self._shadow_mat])
         self._shadow_node.setGeometry_(sgeo)
+
+    # ---- 内部：sim 的可选渲染支持数组（缺失时回退常量，保证模块可独立验证） ----
+    @staticmethod
+    def _sim_array(sim, name: str, n: int, default: float) -> np.ndarray:
+        fn = getattr(sim, name, None)
+        if callable(fn):
+            try:
+                a = np.asarray(fn(), dtype=np.float32)
+                if a.shape == (n,):
+                    return a
+            except Exception:
+                pass
+        return np.full(n, default, dtype=np.float32)
+
+    # ---- 内部：灯光基向 → 阴影偏移方向与抬升柔化系数 ----
+    def _sun_shadow_basis(self, sun_node, root) -> tuple[tuple[float, float], float]:
+        """用 SceneKit 自己的坐标转换取平行光传播方向（不猜欧拉/矩阵约定）。
+
+        平行光沿节点自身 -z 传播 → 让 SceneKit 把它换算到场景根节点空间，
+        得到权威的传播方向 d。阴影方向 = d 的水平分量（屏幕 x = 场景 x、屏幕 y = 场景 z），
+        lean = |水平|/|竖直| = 1/tan(仰角)：物体抬升 h 时影子外移 h·lean。
+        """
+        try:
+            d = sun_node.convertVector_toNode_((0.0, 0.0, -1.0), root)
+            dx, dy, dz = float(d[0]), float(d[1]), float(d[2])
+            h = math.hypot(dx, dz)
+            if h < 1e-6:
+                return (0.0, 0.0), 0.6
+            return (dx / h, dz / h), float(min(max(h / max(abs(dy), 1e-3), 0.0), 3.0))
+        except Exception:
+            return (0.0, 0.0), 0.6
 
     # ---- 内部：timer 与 tick ----
     def _start_timer(self) -> None:

@@ -4,16 +4,19 @@
   - 地毯款式：下拉（assets/rugs/rug-*.png）+「打开素材文件夹」+「重新扫描」
   - 推荐规格说明（给用户看的贴图规范）
   - 默认大小（宽/高 占屏比滑块）、默认角度（-45°~45°）
-  - 图标隆起（开关 + 高度倍率）、伪阴影（开关）
+  - 图标隆起（开关 + 高度倍率）、接触阴影（开关）
   - 按钮：重置摆放 / 关闭
 
-持久化：<项目根>/settings.json（**项目内文件**，不进系统状态；删掉即回默认值）。
+持久化：源码运行 → <项目根>/settings.json（开发习惯不变）；打包成 .app 运行 →
+~/Library/Application Support/DesktopRug/settings.json（首次从包内默认播种；
+写 app 包内文件会在升级/重装时丢设置）。删掉即回默认值。
 所有控件改动即时生效并落盘（由 rug.py 注入的回调应用）。
 """
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 
 import objc
@@ -39,12 +42,13 @@ DEFAULTS = {
     "texture": "",          # 选中的贴图文件名（""=自动取第一个 rug-*.png）
     "bump_enabled": True,   # 图标隆起
     "bump_scale": 1.0,      # 隆起高度倍率
-    "shadow_enabled": True, # 伪阴影
+    "shadow_enabled": True, # 接触阴影（伪阴影：黑 + 顶点色 alpha 的贴边投影）
+    "menubar_hint_version": "",  # 已提示过「菜单栏图标被系统隐藏」的版本（每版本最多一次）
 }
 
 
 class Settings:
-    """设置的读写（项目内 settings.json；文件缺失/损坏 → 默认值）。"""
+    """设置的读写（文件缺失/损坏 → 默认值）。"""
 
     def __init__(self, path: str) -> None:
         self.path = path
@@ -77,8 +81,33 @@ class Settings:
         save_settings(self)
 
 
+APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/DesktopRug")
+
+
+def _is_bundled() -> bool:
+    """是否运行在打包后的 .app 内（源码被放在 Contents/Resources/app/ 下）。"""
+    return ".app/Contents/" in os.path.abspath(__file__)
+
+
+def settings_path(project_dir: str) -> str:
+    """设置文件位置：打包运行 → 用户数据目录；源码运行 → 项目内 settings.json。"""
+    if _is_bundled():
+        return os.path.join(APP_SUPPORT_DIR, "settings.json")
+    return os.path.join(project_dir, "settings.json")
+
+
 def load_settings(project_dir: str) -> Settings:
-    return Settings(os.path.join(project_dir, "settings.json"))
+    path = settings_path(project_dir)
+    if _is_bundled() and not os.path.exists(path):
+        # 首次运行：把包内默认 settings.json 播种到用户数据目录（失败则退回内置默认值）
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            seed = os.path.join(project_dir, "settings.json")
+            if os.path.isfile(seed):
+                shutil.copyfile(seed, path)
+        except OSError:
+            pass
+    return Settings(path)
 
 
 def save_settings(settings: Settings) -> None:
@@ -235,7 +264,7 @@ class SettingsController(NSObject):
 
         chk2 = NSButton.alloc().initWithFrame_(NSMakeRect(20, y, 240, 22))
         chk2.setButtonType_(NSButtonTypeSwitch)
-        chk2.setTitle_("伪阴影（毯子边缘投影）")
+        chk2.setTitle_("接触阴影（毯子边缘投影）")
         chk2.setTarget_(self)
         chk2.setAction_("onShadowToggle:")
         v.addSubview_(chk2)
@@ -257,7 +286,22 @@ class SettingsController(NSObject):
         v.addSubview_(b_close)
 
         p.setContentView_(v)
+        p.setDelegate_(self)      # 接收 windowWillClose_：红点关窗也要通知 RugApp 收起 Dock 图标
         self.panel = p
+
+    def windowWillClose_(self, notification) -> None:
+        """窗口被关闭（红点/⌘W）→ 通知 RugApp（关窗后 Dock 图标收回、回 Accessory）。"""
+        self._notify_closed()
+
+    @objc.python_method
+    def _notify_closed(self) -> None:
+        app = self.app
+        if app is None:
+            return
+        try:
+            app._settings_window_closed()
+        except Exception as exc:
+            print(f"RUG-WARN 关窗回调失败：{exc}", flush=True)
 
     @objc.python_method
     def _slider(self, parent, x, y, w, lo, hi, action):
@@ -370,4 +414,5 @@ class SettingsController(NSObject):
 
     def onClose_(self, sender) -> None:
         if self.panel is not None:
-            self.panel.orderOut_(None)
+            self.panel.orderOut_(None)     # 只是隐藏（不触发 windowWillClose_）→ 手动通知
+        self._notify_closed()

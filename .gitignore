@@ -11,7 +11,21 @@ venv/
 .coverage
 htmlcov/
 
+# ---- 构建产物（build_app.sh 的中间物与分发包，不进仓库）----
+build/
+dist/
+*.dmg
+
+# ---- 品牌图标生成物（scripts/make_logo_assets.py 全量重建，不进仓库）----
+icon.icns
+icon.iconset/
+icon_temp.png
+assets/logo/logo-mark-1024.png
+assets/logo/menubar.png
+assets/logo/menubar@2x.png
+assets/logo/menubar@3x.png
+
 # ---- 第三方参考素材（不随公开仓库分发）----
 # refer/ 内的参考视频来自 X 原帖（非本项目版权），本地留档即可；
 # 如需一并提交：git add -f refer/<文件名>
-refer/*.mp4
+refer/
