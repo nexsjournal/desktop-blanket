@@ -21,11 +21,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION="6.8.0"
+VERSION="6.9.0"
 APP_NAME="桌面毛毯"
 BUNDLE_ID="com.desktop.rug"
 APP="$APP_NAME.app"
-DIST_DMG="dist/${APP_NAME}-${VERSION}.dmg"
+# 分发包用 ASCII 文件名：中文名在 GitHub Release / HTTP 下载链路上会被
+# 掐掉非 ASCII 字符（实测上传后变成 "-6.9.0.dmg"），ASCII 名对 curl/脚本更友好。
+DIST_DMG="dist/DesktopRug-${VERSION}.dmg"
 LOG_FILE="$HOME/Library/Logs/DesktopRug.log"
 LOCK_FILE="$HOME/Library/Application Support/DesktopRug/instance.lock"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
@@ -262,7 +264,7 @@ done
 mkdir -p "$STAGE/dmg"
 ditto "$APP_DIR" "$STAGE/dmg/$APP"
 ln -s /Applications "$STAGE/dmg/Applications"
-rm -f "dist/${APP_NAME}-"*.dmg   # 旧版本分发包不再保留（同名前缀）
+rm -f dist/DesktopRug-*.dmg dist/"${APP_NAME}"-*.dmg   # 旧版本分发包不再保留
 hdiutil create -quiet -volname "$APP_NAME" -srcfolder "$STAGE/dmg" -ov -format UDZO "$DIST_DMG"
 ok "分发包：$DIST_DMG"
 
