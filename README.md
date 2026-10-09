@@ -21,15 +21,18 @@
 
 ## 安装
 
-### 只想用（不用编译）
+| 平台 | 下载 | 安装方式 |
+| --- | --- | --- |
+| macOS（Apple Silicon / arm64） | [下载 DMG](https://github.com/nexsjournal/desktop-blanket/releases/latest/download/DesktopRug-arm64.dmg) | 打开 DMG，把「桌面毛毯」拖进 `Applications` |
+| macOS（Intel / x86_64） | [从源码构建](#build-from-source) | 发布包只有 arm64：自己跑一次 `./build_app.sh` |
 
-去 **[Releases](https://github.com/nexsjournal/desktop-blanket/releases/latest)** 下载 **`DesktopRug-<版本>.dmg`**：
+每次构建（含历史版本）都在 **[Releases](https://github.com/nexsjournal/desktop-blanket/releases)** 上；上面的下载直链始终指向最新版。
 
-1. 双击 DMG 打开 → 把「桌面毛毯」拖进 `Applications`（窗口里已放好 `Applications` 快捷方式）；
-2. 第一次打开会被 Gatekeeper 拦（应用只有 ad-hoc 签名、未公证）：右键点应用 →「打开」→ 再点「打开」；macOS 15+ 还要去 系统设置 → 隐私与安全性 →「仍要打开」。之后双击即开。
-3. 想彻底卸载：应用拖进废纸篓；连设置一起清 `rm -rf ~/Library/Application\ Support/DesktopRug`。
+**首次启动（macOS）** —— 应用是 ad-hoc 签名、**未公证**，macOS 会拦一次（「无法验证开发者」）：去 **系统设置 → 隐私与安全性**，滚到**安全性**一栏，点被拦应用旁的**「仍要打开」**，弹窗里再确认一次；也可以在「应用程序」里**右键点应用 →「打开」→ 再点「打开」**。放行一次后双击即开，不再拦。
 
-> 发布包只打 **arm64**（Apple Silicon）。Intel Mac 请用下面的源码方式自行构建。
+应用包是**自包含**的（内置 Python 运行时 + 依赖 + 贴图），与仓库目录无关——删了仓库照跑。
+
+<a id="build-from-source"></a>
 
 ### 自己构建（源码 → app → DMG）
 
@@ -40,13 +43,13 @@
 | 产物 | 用途 |
 | --- | --- |
 | `/Applications/桌面毛毯.app` | 双击即用。**自包含**：内置 Python 运行时 + 依赖 + 贴图，不依赖本仓库目录（把仓库删了它照跑） |
-| `dist/DesktopRug-6.9.0.dmg` | 发给别人：打开 DMG → 把「桌面毛毯」拖进 Applications |
+| `dist/DesktopRug-arm64.dmg` | 发给别人：打开 DMG → 把「桌面毛毯」拖进 Applications |
 
 - **打开应用后屏幕上立刻出现毯子**（默认「启动即铺上」）。应用是**常驻菜单栏**形态（像 Clash）：平时不占 Dock，只在菜单栏放毛毯图标（品牌标记的模板变体，见 `assets/logo/`）；**打开设置窗时才临时进 Dock**（此时 ⌘Q 可用），关窗收回。
 - **菜单栏图标一定看得见**（v6.8）：macOS 26 有个坑——`LaunchServices` 启动（= 双击 / 登录项）的进程拿不到菜单栏落位（项被丢到屏幕外，`isVisible=False`），而从命令行启动就正常。应用现在会自检这一点，发现没落位就**自动把活交接给一个非 LS 启动的子进程**，子进程能拿到图标；两路都拿不到时才弹一次说明（指向 系统设置 → 控制中心 → 菜单栏）。机制与实测见 [开发文档 §12.20](开发文档.md)。
 - **在毯子上点右键**是**最可靠的入口**（不依赖菜单栏）：掀开毯子／调整尺寸／抚平折痕／重置／设置／退出。
 - 构建脚本自带**自检门禁**：末尾用包内运行时跑 `--selftest`——真的把毯子铺上并用 `CGWindowListCopyWindowInfo` 校验窗口层级，必须出现 `SELFTEST-OK` 才产出，否则构建报错退出。
-- 应用是 **ad-hoc 签名、未公证**的（没有 Developer ID 证书；自己编自己用没问题）。发给别人时对方首次打开会被 Gatekeeper 拦：右键点应用 →「打开」→ 再点「打开」；macOS 15+ 可能还要去 系统设置 → 隐私与安全性 →「仍要打开」。要做到双击即开不弹窗，需要 Apple 开发者账号（$99/年）做 Developer ID 签名 + 公证——本项目没做。
+- 应用是 **ad-hoc 签名、未公证**的（本机自己编自己用没问题）；发给别人时对方首次打开要放行一次，步骤见上面「首次启动」。要做到双击即开不弹窗，需要 Apple 开发者账号（$99/年）做 Developer ID 签名 + 公证——本项目没做。
 - 应用数据：设置 `~/Library/Application Support/DesktopRug/settings.json`、日志 `~/Library/Logs/DesktopRug.log`、单实例锁 `instance.lock`（同目录）。包内代码只读，运行时不往 app 包里写任何东西（否则会破坏签名封存）。
 - 卸载：`/Applications/桌面毛毯.app` 拖废纸篓即可；连设置一起清 `rm -rf ~/Library/Application\ Support/DesktopRug`。
 - 开机自启（可选）：系统设置 → 通用 → 登录项 → 添加 `/Applications/桌面毛毯.app`。

@@ -25,9 +25,14 @@ VERSION="6.9.0"
 APP_NAME="桌面毛毯"
 BUNDLE_ID="com.desktop.rug"
 APP="$APP_NAME.app"
-# 分发包用 ASCII 文件名：中文名在 GitHub Release / HTTP 下载链路上会被
-# 掐掉非 ASCII 字符（实测上传后变成 "-6.9.0.dmg"），ASCII 名对 curl/脚本更友好。
-DIST_DMG="dist/DesktopRug-${VERSION}.dmg"
+# 分发包文件名：两处约束决定了这个名字
+#   ① 必须 ASCII —— 中文名在 GitHub Release / HTTP 下载链路上会被掐掉非 ASCII 字符
+#      （实测上传后变成 "-6.9.0.dmg"）；
+#   ② 用「稳定名」（不带版本号）—— README 里的 GitHub 直链形如
+#      /releases/latest/download/DesktopRug-arm64.dmg，换版本时链接不用改；
+#      版本号由 Release 的 tag 承载。
+DIST_ARCH="$(uname -m)"
+DIST_DMG="dist/DesktopRug-${DIST_ARCH}.dmg"
 LOG_FILE="$HOME/Library/Logs/DesktopRug.log"
 LOCK_FILE="$HOME/Library/Application Support/DesktopRug/instance.lock"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
