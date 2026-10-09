@@ -1,5 +1,6 @@
 # 桌面毛毯（Desktop Rug）
 
+[![下载 DMG](https://img.shields.io/github/v/release/nexsjournal/desktop-blanket?label=%E4%B8%8B%E8%BD%BD%20DMG&color=blue)](https://github.com/nexsjournal/desktop-blanket/releases/latest)
 ![macOS 11+](https://img.shields.io/badge/platform-macOS%2011%2B-000000?logo=apple&logoColor=white)
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
